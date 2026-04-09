@@ -29,7 +29,10 @@
 #
 #
 # version 1.1 / 05.04.2026
-# 
+# version 1.2 / 09.04.2026
+#  - fixed readability in csv/excel and gridview
+#  - fixed permission bug
+#  - re-ordered table columns
 # 
 #
 
@@ -61,6 +64,7 @@ function Get-PKITemplatePermission {
 	$oTemplate = Get-ADObject -Filter 'Name -eq $TemplateName' -SearchBase $CATemplateOU
     $ACL = (Get-Acl "ad:$oTemplate").Access
 	ForEach ($ACE in $ACL) {
+<#
 		$htSecView[$ACE.IdentityReference] = New-Object 'psobject' -Property @{
 			#'TemplateName'		 = $oTemplate.Name
 			'IdentityReference'	 = $ACE.IdentityReference
@@ -70,31 +74,44 @@ function Get-PKITemplatePermission {
 			'AutoEnrollment'	 = "false"
 			'Enroll'			 = "false"
 		}
+#>
+		[string]$key = $ACE.IdentityReference.Value
+        if (!($htSecView.ContainsKey($key))) {
+            $htSecView[$key] = @()
+        }
+
 		if ($ACE.AccessControlType -eq 'Allow') {
 			if ($ACE.ActiveDirectoryRights.HasFlag([System.DirectoryServices.ActiveDirectoryRights]::GenericAll)) {
-				$htSecView[$ACE.IdentityReference].FullControll = "true"
+				$htSecView[$key] += ("FullControll")
+#				$htSecView[$ACE.IdentityReference].FullControll = "true"
 			}
 			if ($ACE.ActiveDirectoryRights.HasFlag([System.DirectoryServices.ActiveDirectoryRights]::GenericRead)) {
-				$htSecView[$ACE.IdentityReference].Read = "true"
+				$htSecView[$key] += ("Read")
+#				$htSecView[$ACE.IdentityReference].Read = "true"
 			}
 			if ($ACE.ActiveDirectoryRights.HasFlag([System.DirectoryServices.ActiveDirectoryRights]::GenericWrite)) {
-				$htSecView[$ACE.IdentityReference].Write = "true"
+				$htSecView[$key] += ("Write")
+#				$htSecView[$ACE.IdentityReference].Write = "true"
 			}
 			if ($ACE.ActiveDirectoryRights.HasFlag([System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)) {
 				If ($_.ObjectType -eq 'a05b8cc2-17bc-4802-a710-e7c15ab866a2') {
-					$htSecView[$ACE.IdentityReference].AutoEnrollment = "true"
+    				$htSecView[$key] += ("AutoEnrollment")
+#					$htSecView[$ACE.IdentityReference].AutoEnrollment = "true"
 				}
 				If ($ACE.ObjectType -eq '0e10c968-78fb-11d2-90d4-00c04f79dc55') {
-					$htSecView[$ACE.IdentityReference].Enroll = "true"
+    				$htSecView[$key] += ("Enroll")
+#					$htSecView[$ACE.IdentityReference].Enroll = "true"
 				}
 			}
 		} else {
 			if ($ACE.ActiveDirectoryRights.HasFlag([System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight)) {
 				If ($_.ObjectType -eq 'a05b8cc2-17bc-4802-a710-e7c15ab866a2') {
-					$htSecView[$ACE.IdentityReference].AutoEnrollment = "denied"
+    				$htSecView[$key] += ("Deny-AutoEnroll")
+#					$htSecView[$ACE.IdentityReference].AutoEnrollment = "denied"
 				}
 				If ($ACE.ObjectType -eq '0e10c968-78fb-11d2-90d4-00c04f79dc55') {
-					$htSecView[$ACE.IdentityReference].Enroll = "denied"
+    				$htSecView[$key] += ("Deny-Enroll")
+#					$htSecView[$ACE.IdentityReference].Enroll = "denied"
 				}
 			}
         }
@@ -117,6 +134,18 @@ function Convert-pKIPeriod ([Byte[]]$ByteArray) {
     elseif (!($Value % 3600) -and ($Value / 3600) -ge 1) {[string]($Value / 3600) + " hours"}
     else {"0 hours"}
 }
+
+
+function Convert-Oid2Text
+{
+    param (
+        [Parameter(Mandatory = $true)]
+        [String]$OIDString
+    )
+    [string]$result = (New-Object Security.Cryptography.Oid($OIDString)).FriendlyName
+    Return $result
+}
+
 
 #region common variable block
 $DateStr = (Get-Date).ToString("yyyyMMddHHmm")
@@ -295,6 +324,7 @@ Write-Host "--> done! " -ForegroundColor Green
 
 #endregion
 
+#region read all template objects from AD
 Write-Host "  collecting all ADCS templates from AD ..." -ForegroundColor Yellow
 
 $aTmpls = Get-ADObject -Filter "objectclass -eq 'pKICertificateTemplate'" -Properties * -SearchBase $CATemplateOU |
@@ -336,9 +366,9 @@ Write-Host "--> done! " -ForegroundColor Green
 Write-Host " "
 
 Write-Host ("Received {0} templates" -f $aTmpls.Count) -ForegroundColor Cyan
+#endregion
 
-
-#get template permissions, assigned CA and convert binary values
+#region get template permissions, assigned CA and convert all values into readable strings
 Write-Host "  decoding binary values into human readable format ..." -ForegroundColor Yellow
 
 $i = 0
@@ -358,41 +388,56 @@ ForEach ($tmpl in $aTmpls) {
     $aTmpls[$i].'KeyUsage-Enc' = ([KeyUsage] $aTmpls[$i].'pKIKeyUsage'|Out-String).Replace(", ","`n")
     $aTmpls[$i].'ExpirationPeriod-Enc' = Convert-pKIPeriod $aTmpls[$i].'pKIExpirationPeriod'
     $aTmpls[$i].'OverlapPeriod-Enc' = Convert-pKIPeriod $aTmpls[$i].'pKIOverlapPeriod'
-    $aTmpls[$i].'str-Certificate-Application-Policy' = ($aTmpls[$i].'msPKI-Certificate-Application-Policy'|Out-String)
-    $aTmpls[$i].'strCriticalExtensions' = ($aTmpls[$i].'pKICriticalExtensions'|Out-String)
+    $aTmpls[$i].'str-Certificate-Application-Policy' = foreach ($eku in $aTmpls[$i].'msPKI-Certificate-Application-Policy') {
+        "$(Convert-Oid2Text -OIDString $($eku|out-string).Trim()) - $(($eku|out-string).Trim())"
+    }
+    $aTmpls[$i].'str-Certificate-Application-Policy' = ($aTmpls[$i].'str-Certificate-Application-Policy'|Out-String)
+
+    $aTmpls[$i].'strCriticalExtensions' = foreach ($oid in $aTmpls[$i].'pKICriticalExtensions') {
+        "$(Convert-Oid2Text -OIDString $($oid|out-string).Trim()) - $(($oid|out-string).Trim())"
+    }
+    
+    $aTmpls[$i].'strCriticalExtensions' = ($aTmpls[$i].'strCriticalExtensions'|Out-String)
     $aTmpls[$i].'strDefaultCSPs' = ($aTmpls[$i].'pKIDefaultCSPs'|Out-String)
-    $aTmpls[$i].'strExtendedKeyUsage' = ($aTmpls[$i].'pKIExtendedKeyUsage'|Out-String)
+    $aTmpls[$i].'strExtendedKeyUsage' =  foreach ($eku in $aTmpls[$i].'pKIExtendedKeyUsage') {
+        "$(Convert-Oid2Text -OIDString $($eku|out-string).Trim()) - $(($eku|out-string).Trim())"
+    }
+    $aTmpls[$i].'strExtendedKeyUsage' =  ($aTmpls[$i].'strExtendedKeyUsage'|Out-String)
+
 	$aTmpls[$i++].Security = Get-PKITemplatePermission -Template $tmpl.Name
 }
 Write-Host "--> done! " -ForegroundColor Green
 Write-Host " "
+#endregion
 
-
+#region generate output object
 Write-Host "  generating output object ..." -ForegroundColor Yellow
-$aExpList = $aTmpls | select 'Name', 
+$aExpList = $aTmpls |
+        select 'Name', 
         'AssignedCA',
         'Created', 
         'Modified', 
-        'flags-Enc',
         'str-Certificate-Application-Policy', 
+        'strExtendedKeyUsage', 
+        'msPKI-Minimal-Key-Size', 
+        'KeyUsage-Enc', 
+        'strCriticalExtensions', 
+        'strDefaultCSPs', 
+        'pKIDefaultKeySpec', 
+        'flags-Enc',
         'Name-Flag-Enc', 
         'Enroll-Flag-Enc', 
-        'msPKI-Minimal-Key-Size', 
         'Priv-Key-Flag-Enc', 
         'msPKI-RA-Signature', 
         'msPKI-Template-Minor-Revision', 
         'msPKI-Template-Schema-Version', 
-        'strCriticalExtensions', 
-        'strDefaultCSPs', 
-        'pKIDefaultKeySpec', 
         'ExpirationPeriod-Enc',
         'OverlapPeriod-Enc',
-        'strExtendedKeyUsage', 
-        'KeyUsage-Enc', 
         'Security' 
 
 Write-Host "--> done! " -ForegroundColor Green
 Write-Host " "
+#endregion
 
 if ($Export2Csv) {
     Write-Host "  exporting to file: $($ExportFileName) ..." -ForegroundColor Yellow
